@@ -9,7 +9,7 @@ on:
       source_sha256:
         description: SHA-256 of the source archive
         required: true
-        default: '49768a9d0802213b46c899e6c00578cf39c620494def3fc6ca006249af18f372'
+        default: 'bf6a61576a98c5ffd000f2d080c985c8189f613c0bf33d914240c06a9831fb62'
 permissions:
   contents: write
 concurrency:
