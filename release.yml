@@ -1,0 +1,72 @@
+name: Build and publish Windows release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version (draft release and source archive must exist)
+        required: true
+        default: '2.11.0'
+      source_sha256:
+        description: SHA-256 of the source archive
+        required: true
+        default: 'ac76ed0b0dc18d6cbf78441b967b9babab04ab1fb8373dd6c7f87e91cc36a0f8'
+permissions:
+  contents: write
+concurrency:
+  group: binder-stable-release
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      SOURCE_SHA256: ${{ inputs.source_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Fetch and verify source
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_VERSION -notmatch '^\d{1,5}\.\d{1,5}\.\d{1,5}$') { throw 'Invalid stable version' }
+          if ($env:SOURCE_SHA256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid source SHA-256' }
+          $archive = "MajesticBinder-$env:RELEASE_VERSION-source.zip"
+          gh release download "v$env:RELEASE_VERSION" --repo $env:GITHUB_REPOSITORY --pattern $archive --dir incoming
+          if ($LASTEXITCODE) { throw 'Source download failed' }
+          if ((Get-FileHash "incoming/$archive" -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SOURCE_SHA256.ToLowerInvariant()) { throw 'Source checksum mismatch' }
+          Expand-Archive "incoming/$archive" -DestinationPath work
+          $assembly = Get-Content 'work/MajesticBinder/src/AssemblyInfo.cs' -Raw
+          if (!$assembly.Contains("AssemblyVersion(`"$env:RELEASE_VERSION.0`")")) { throw 'Source version mismatch' }
+      - name: Install build tools
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+      - name: Compile and run Windows checks
+        shell: powershell
+        run: ./work/MajesticBinder/tools/build-windows.ps1
+      - name: Install and launch application
+        shell: powershell
+        run: ./work/MajesticBinder/tools/smoke-windows.ps1
+      - name: Generate verified update manifest
+        shell: pwsh
+        run: python work/MajesticBinder/tools/release-manifest.py
+      - name: Save build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-diagnostics
+          path: |
+            work/MajesticBinder/build/startup-smoke.log
+            work/MajesticBinder/release/*
+          if-no-files-found: ignore
+      - name: Upload stable assets and publish release
+        shell: pwsh
+        run: |
+          $installer = "work/MajesticBinder/release/MajesticBinder-Setup-$env:RELEASE_VERSION-x64.exe"
+          gh release upload "v$env:RELEASE_VERSION" $installer work/MajesticBinder/release/update.json --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE) { throw 'Release asset upload failed' }
+          gh release edit "v$env:RELEASE_VERSION" --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false --latest
+          if ($LASTEXITCODE) { throw 'Release publication failed' }
